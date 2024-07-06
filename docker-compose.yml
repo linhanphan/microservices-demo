@@ -1,0 +1,377 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
+x-default-logging: &logging
+  driver: "json-file"
+  options:
+    max-size: "5m"
+    max-file: "2"
+    tag: "{{.Name}}"
+
+networks:
+  default:
+    name: opentelemetry-demo
+    driver: bridge
+
+services:
+  # ******************
+  # Core Demo Services
+  # ******************
+
+  # AdService
+  adservice:
+    image: ${IMAGE_NAME}/adservice:${IMAGE_VERSION}
+    container_name: ad-service
+    build:
+      context: ./
+      dockerfile: ${AD_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/adservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+    restart: unless-stopped
+    ports:
+      - "${AD_SERVICE_PORT}"
+    environment:
+      - AD_SERVICE_PORT
+      - FLAGD_HOST
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_COLLECTOR_HOST}:${OTEL_COLLECTOR_PORT_HTTP}
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_LOGS_EXPORTER=otlp
+      - OTEL_SERVICE_NAME=adservice
+    logging: *logging
+
+  # Cart service
+  cartservice:
+    image: ${IMAGE_NAME}/cartservice:${IMAGE_VERSION}
+    container_name: cart-service
+    build:
+      context: ./
+      dockerfile: ${CART_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/cartservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 160M
+    restart: unless-stopped
+    ports:
+      - "${CART_SERVICE_PORT}"
+    environment:
+      - CART_SERVICE_PORT
+      - REDIS_ADDR
+      - FLAGD_HOST
+      - VALKEY_ADDR
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=cartservice
+      - ASPNETCORE_URLS=http://*:${CART_SERVICE_PORT}
+    depends_on:
+      valkey-cart:
+        condition: service_started
+    logging: *logging
+
+  # Checkout service
+  checkoutservice:
+    image: ${IMAGE_NAME}/checkoutservice:${IMAGE_VERSION}
+    container_name: checkout-service
+    build:
+      context: ./
+      dockerfile: ${CHECKOUT_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/checkoutservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 20M
+    restart: unless-stopped
+    ports:
+      - "${CHECKOUT_SERVICE_PORT}"
+    environment:
+      - CHECKOUT_SERVICE_PORT
+      - CART_SERVICE_ADDR
+      - CURRENCY_SERVICE_ADDR
+      - EMAIL_SERVICE_ADDR
+      - FLAGD_HOST
+      - PAYMENT_SERVICE_ADDR
+      - PRODUCT_CATALOG_SERVICE_ADDR
+      - SHIPPING_SERVICE_ADDR
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=checkoutservice
+    depends_on:
+      cartservice:
+        condition: service_started
+      currencyservice:
+        condition: service_started
+      emailservice:
+        condition: service_started
+      paymentservice:
+        condition: service_started
+      productcatalogservice:
+        condition: service_started
+      shippingservice:
+        condition: service_started
+    logging: *logging
+
+  # Currency service
+  currencyservice:
+    image: ${IMAGE_NAME}/currencyservice:${IMAGE_VERSION}
+    container_name: currency-service
+    build:
+      context: ./
+      dockerfile: ${CURRENCY_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/currencyservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 20M
+    restart: unless-stopped
+    ports:
+      - "${CURRENCY_SERVICE_PORT}"
+    environment:
+      - PORT=7001
+      - CURRENCY_SERVICE_PORT
+      - VERSION=${IMAGE_VERSION}
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_RESOURCE_ATTRIBUTES=${OTEL_RESOURCE_ATTRIBUTES},service.name=currencyservice   # The C++ SDK does not support OTEL_SERVICE_NAME
+    logging: *logging
+
+  # Email service
+  emailservice:
+    image: ${IMAGE_NAME}/emailservice:${IMAGE_VERSION}
+    container_name: email-service
+    build:
+      context: ./src/emailservice
+      cache_from:
+        - ${IMAGE_NAME}/emailservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 100M
+    restart: unless-stopped
+    ports:
+      - "${EMAIL_SERVICE_PORT}"
+    environment:
+      - APP_ENV=production
+      - EMAIL_SERVICE_PORT
+      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://${OTEL_COLLECTOR_HOST}:${OTEL_COLLECTOR_PORT_HTTP}/v1/traces
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=emailservice
+    logging: *logging
+
+  # Frontend
+  frontend:
+    image: ${IMAGE_NAME}/frontend:${IMAGE_VERSION}
+    container_name: frontend
+    build:
+      context: ./
+      dockerfile: ${FRONTEND_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/frontend:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 250M
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT}"
+    environment:
+      - PORT=${FRONTEND_PORT}
+      - FRONTEND_ADDR
+      - AD_SERVICE_ADDR
+      - CART_SERVICE_ADDR
+      - CHECKOUT_SERVICE_ADDR
+      - CURRENCY_SERVICE_ADDR
+      - PRODUCT_CATALOG_SERVICE_ADDR
+      - RECOMMENDATION_SERVICE_ADDR
+      - SHIPPING_SERVICE_ADDR
+      - SHOPPING_ASSISTANT_SERVICE_ADDR
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_RESOURCE_ATTRIBUTES=${OTEL_RESOURCE_ATTRIBUTES}
+      - ENV_PLATFORM
+      - OTEL_SERVICE_NAME=frontend
+      - PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - WEB_OTEL_SERVICE_NAME=frontend-web
+      - OTEL_COLLECTOR_HOST
+      - FLAGD_HOST
+      - FLAGD_PORT
+    depends_on:
+      adservice:
+        condition: service_started
+      cartservice:
+        condition: service_started
+      checkoutservice:
+        condition: service_started
+      currencyservice:
+        condition: service_started
+      productcatalogservice:
+        condition: service_started
+      recommendationservice:
+        condition: service_started
+      shippingservice:
+        condition: service_started
+    logging: *logging
+
+  # Load Generator
+  loadgenerator:
+    image: ${IMAGE_NAME}/loadgenerator:${IMAGE_VERSION}
+    container_name: load-generator
+    build:
+      context: ./
+      dockerfile: ${LOAD_GENERATOR_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/loadgenerator:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 120M
+    restart: unless-stopped
+    ports:
+      - "${LOCUST_WEB_PORT}"
+    environment:
+      - LOCUST_WEB_PORT
+      - USERS=10
+      - LOCUST_HOST
+      - LOCUST_HEADLESS
+      - LOCUST_AUTOSTART
+      - LOCUST_BROWSER_TRAFFIC_ENABLED=false
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=loadgenerator
+      - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+      - LOCUST_WEB_HOST=0.0.0.0
+      - FLAGD_HOST
+      - FLAGD_PORT
+    depends_on:
+      frontend:
+        condition: service_started
+    logging: *logging
+
+  # Payment service
+  paymentservice:
+    image: ${IMAGE_NAME}/paymentservice:${IMAGE_VERSION}
+    container_name: payment-service
+    build:
+      context: ./
+      dockerfile: ${PAYMENT_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/paymentservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 120M
+    restart: unless-stopped
+    ports:
+      - "${PAYMENT_SERVICE_PORT}"
+    environment:
+      - FLAGD_HOST
+      - PORT=50051
+      - PAYMENT_SERVICE_PORT
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=paymentservice
+    logging: *logging
+
+  # Product Catalog service
+  productcatalogservice:
+    image: ${IMAGE_NAME}/productcatalogservice:${IMAGE_VERSION}
+    container_name: product-catalog-service
+    build:
+      context: ./
+      dockerfile: ${PRODUCT_CATALOG_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/productcatalogservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 20M
+    restart: unless-stopped
+    ports:
+      - "${PRODUCT_CATALOG_SERVICE_PORT}"
+    environment:
+      - FLAGD_HOST
+      - PRODUCT_CATALOG_SERVICE_PORT
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=productcatalogservice
+    logging: *logging
+
+  # Recommendation service
+  recommendationservice:
+    image: ${IMAGE_NAME}/recommendationservice:${IMAGE_VERSION}
+    container_name: recommendation-service
+    build:
+      context: ./
+      dockerfile: ${RECOMMENDATION_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/recommendationservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 50M
+    restart: unless-stopped
+    ports:
+      - "${RECOMMENDATION_SERVICE_PORT}"
+    environment:
+      - FLAGD_HOST
+      - RECOMMENDATION_SERVICE_PORT
+      - PRODUCT_CATALOG_SERVICE_ADDR
+      - OTEL_PYTHON_LOG_CORRELATION=true
+      - OTEL_EXPORTER_OTLP_ENDPOINT
+      - OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=recommendationservice
+      - PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+    depends_on:
+      productcatalogservice:
+        condition: service_started
+    logging: *logging
+
+  # Shipping service
+  shippingservice:
+    image: ${IMAGE_NAME}/shippingservice:${IMAGE_VERSION}
+    container_name: shipping-service
+    build:
+      context: ./
+      dockerfile: ${SHIPPING_SERVICE_DOCKERFILE}
+      cache_from:
+        - ${IMAGE_NAME}/shippingservice:${IMAGE_VERSION}
+    deploy:
+      resources:
+        limits:
+          memory: 20M
+    restart: unless-stopped
+    ports:
+      - "${SHIPPING_SERVICE_PORT}"
+    environment:
+      - SHIPPING_SERVICE_PORT
+      - QUOTE_SERVICE_ADDR
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://${OTEL_COLLECTOR_HOST}:${OTEL_COLLECTOR_PORT_GRPC}
+      - OTEL_RESOURCE_ATTRIBUTES
+      - OTEL_SERVICE_NAME=shippingservice
+    logging: *logging
+
+
+  # Valkey used by Cart service
+  valkey-cart:
+    image: ${VALKEY_IMAGE}
+    container_name: valkey-cart
+    user: valkey
+    deploy:
+      resources:
+        limits:
+          memory: 20M
+    restart: unless-stopped
+    ports:
+      - "${VALKEY_PORT}"
+    logging: *logging
